@@ -1,0 +1,245 @@
+"""
+3D SNAKE GAME - no installation needed (uses only Python's built-in tkinter)
+
+Run:  python snake3d_tk.py
+
+Controls:
+    Arrow keys   move forward / back / left / right (relative to the camera)
+    W / S        move UP / DOWN
+    Q / E        rotate the camera around the arena
+    R            restart
+"""
+import math
+import random
+import time
+import tkinter as tk
+
+# ----------------------------- settings ---------------------------------
+GRID = 8                  # arena is GRID x GRID x GRID cells
+START_DELAY = 0.45        # seconds per move (smaller = faster)
+MIN_DELAY = 0.15
+SPEEDUP = 0.015
+WIDTH, HEIGHT = 900, 720
+CAM_DIST = 20.0           # camera distance (perspective strength)
+FOCAL = 760.0
+PITCH = math.radians(28)  # camera looks down at the arena by this angle
+
+C = (GRID - 1) / 2        # centre of the arena
+
+
+class Snake3D:
+    def __init__(self, root):
+        self.root = root
+        root.title("3D Snake")
+        self.canvas = tk.Canvas(root, width=WIDTH, height=HEIGHT, bg="#0f0f1e",
+                                highlightthickness=0)
+        self.canvas.pack()
+
+        self.yaw = 0.0            # current camera angle (radians, animated)
+        self.yaw_target = 0.0     # target camera angle
+        self.new_game()
+
+        root.bind("<Key>", self.on_key)
+        self.last_step = time.time()
+        self.frame()
+
+    # ------------------------- game logic -------------------------------
+    def new_game(self):
+        mid = GRID // 2
+        self.snake = [(mid - i, mid, mid) for i in range(3)]   # head first
+        self.direction = (1, 0, 0)
+        self.next_direction = (1, 0, 0)
+        self.score = 0
+        self.delay = START_DELAY
+        self.game_over = False
+        self.won = False
+        self.food = None
+        self.spawn_food()
+        self.last_step = time.time()
+
+    def spawn_food(self):
+        free = [(x, y, z) for x in range(GRID) for y in range(GRID)
+                for z in range(GRID) if (x, y, z) not in self.snake]
+        if not free:
+            self.won = True
+            self.game_over = True
+            self.food = None
+            return
+        self.food = random.choice(free)
+
+    def step(self):
+        self.direction = self.next_direction
+        hx, hy, hz = self.snake[0]
+        dx, dy, dz = self.direction
+        new = (hx + dx, hy + dy, hz + dz)
+
+        # wall collision
+        if any(c < 0 or c >= GRID for c in new):
+            self.game_over = True
+            return
+
+        ate = (new == self.food)
+        body = self.snake if ate else self.snake[:-1]
+        if new in body:                       # self collision
+            self.game_over = True
+            return
+
+        self.snake.insert(0, new)
+        if ate:
+            self.score += 10
+            self.delay = max(MIN_DELAY, self.delay - SPEEDUP)
+            self.spawn_food()
+        else:
+            self.snake.pop()
+
+    # ------------------------- input ------------------------------------
+    def camera_vectors(self):
+        """World-space 'forward' and 'right' as seen from the camera."""
+        t = round(self.yaw_target / (math.pi / 2)) * (math.pi / 2)
+        fwd = (round(-math.sin(t)), 0, round(math.cos(t)))
+        right = (round(math.cos(t)), 0, round(math.sin(t)))
+        return fwd, right
+
+    def try_turn(self, vec):
+        cur = self.direction
+        if len(self.snake) > 1 and vec == (-cur[0], -cur[1], -cur[2]):
+            return                            # can't reverse into yourself
+        self.next_direction = vec
+
+    def on_key(self, event):
+        k = event.keysym.lower()
+        if k == "r":
+            self.new_game()
+            return
+        if k == "q":
+            self.yaw_target -= math.pi / 2
+        elif k == "e":
+            self.yaw_target += math.pi / 2
+        if self.game_over:
+            return
+
+        fwd, right = self.camera_vectors()
+        neg = lambda v: (-v[0], -v[1], -v[2])
+        if k == "up":
+            self.try_turn(fwd)
+        elif k == "down":
+            self.try_turn(neg(fwd))
+        elif k == "right":
+            self.try_turn(right)
+        elif k == "left":
+            self.try_turn(neg(right))
+        elif k == "w":
+            self.try_turn((0, 1, 0))
+        elif k == "s":
+            self.try_turn((0, -1, 0))
+
+    # ------------------------- 3D projection ----------------------------
+    def project(self, x, y, z):
+        """3D world point -> (screen_x, screen_y, depth, scale)."""
+        x -= C
+        y -= C
+        z -= C
+        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+        xr = x * cy + z * sy                  # rotate around vertical axis
+        zr = -x * sy + z * cy
+        cp, sp = math.cos(PITCH), math.sin(PITCH)
+        yr = y * cp + zr * sp                 # tilt camera downward
+        zr2 = zr * cp - y * sp                # bigger = farther away
+        scale = FOCAL / (CAM_DIST + zr2)
+        return (WIDTH / 2 + xr * scale, HEIGHT / 2 - yr * scale, zr2, scale)
+
+    def line3d(self, a, b, color, width=1):
+        p, q = self.project(*a), self.project(*b)
+        self.canvas.create_line(p[0], p[1], q[0], q[1], fill=color, width=width)
+
+    # ------------------------- drawing ----------------------------------
+    def draw(self):
+        cv = self.canvas
+        cv.delete("all")
+        lo, hi = -0.5, GRID - 0.5
+
+        # floor grid
+        for i in range(GRID + 1):
+            v = lo + i
+            self.line3d((v, lo, lo), (v, lo, hi), "#2a2a4a")
+            self.line3d((lo, lo, v), (hi, lo, v), "#2a2a4a")
+
+        # wireframe box
+        corners = [(x, y, z) for x in (lo, hi) for y in (lo, hi) for z in (lo, hi)]
+        for a in corners:
+            for b in corners:
+                if sum(a[i] != b[i] for i in range(3)) == 1 and a < b:
+                    self.line3d(a, b, "#3d8bff", 2)
+
+        # shadows on the floor (helps judge height)
+        pts = list(self.snake) + ([self.food] if self.food else [])
+        for (x, y, z) in pts:
+            sx, sy, _, s = self.project(x, lo, z)
+            r = 0.35 * s
+            cv.create_oval(sx - r, sy - r * 0.45, sx + r, sy + r * 0.45,
+                           fill="#1c1c36", outline="")
+        if self.food:                         # drop-line from food to floor
+            fx, fy, fz = self.food
+            self.line3d((fx, fy, fz), (fx, lo, fz), "#803030")
+
+        # objects, far to near (painter's algorithm)
+        items = []
+        for i, p in enumerate(self.snake):
+            sx, sy, depth, s = self.project(*p)
+            items.append((depth, "head" if i == 0 else "body", sx, sy, s, i))
+        if self.food:
+            sx, sy, depth, s = self.project(*self.food)
+            items.append((depth, "food", sx, sy, s, 0))
+        items.sort(key=lambda t: -t[0])
+
+        pulse = 0.08 * math.sin(time.time() * 6)
+        for depth, kind, sx, sy, s, i in items:
+            if kind == "food":
+                r = (0.38 + pulse) * s
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill="#ff3b3b", outline="#ffaaaa", width=2)
+            else:
+                r = 0.46 * s
+                if kind == "head":
+                    fill, out = "#ffe14d", "#fff2a0"
+                else:
+                    shade = max(90, 210 - i * 6)
+                    fill, out = f"#20{shade:02x}40", "#7dffa0"
+                cv.create_rectangle(sx - r, sy - r, sx + r, sy + r,
+                                    fill=fill, outline=out, width=2)
+
+        # HUD
+        cv.create_text(20, 20, anchor="nw", fill="white",
+                       font=("Arial", 20, "bold"), text=f"Score: {self.score}")
+        cv.create_text(20, HEIGHT - 20, anchor="sw", fill="#aaaaaa",
+                       font=("Arial", 11),
+                       text="Arrows: move | W/S: up/down | Q/E: rotate camera | R: restart")
+
+        if self.game_over:
+            msg = "YOU WIN!" if self.won else "GAME OVER"
+            col = "#4dff88" if self.won else "#ff4d4d"
+            cv.create_text(WIDTH / 2, HEIGHT / 2 - 20, fill=col,
+                           font=("Arial", 48, "bold"), text=msg)
+            cv.create_text(WIDTH / 2, HEIGHT / 2 + 35, fill="white",
+                           font=("Arial", 20), text=f"Score: {self.score}  -  press R")
+
+    # ------------------------- main loop --------------------------------
+    def frame(self):
+        # smooth camera rotation
+        diff = self.yaw_target - self.yaw
+        self.yaw += diff * 0.2 if abs(diff) > 0.001 else diff
+
+        now = time.time()
+        if not self.game_over and now - self.last_step >= self.delay:
+            self.last_step = now
+            self.step()
+
+        self.draw()
+        self.root.after(16, self.frame)       # ~60 FPS
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.resizable(False, False)
+    Snake3D(root)
+    root.mainloop()
